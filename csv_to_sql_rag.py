@@ -136,20 +136,22 @@ def create_embeddings(db_params: dict, openai_api_key: str) -> Chroma:
 def preprocess_query(query: str, client: OpenAI) -> str:
     """Preprocess and regenerate the user query to make it more SQL-friendly."""
     try:
-        system_message = """You are a SQL expert. Your task is to reformulate the user's question into a clear, SQL-friendly query.
-        Follow these steps:
-        1. Break down the question into specific data points needed
-        2. Identify the required tables and columns
-        3. Specify any needed aggregations (AVG, SUM, COUNT, etc.)
-        4. Identify any filters or conditions needed
-        5. Determine if any joins are required
-        6. Structure the query requirements in a clear, SQL-oriented format
-        
-        Example:
-        Original: "Show me the average temperature for fermenter 1 yesterday"
-        Reformulated: "Calculate the average value of FERM1_TEMP_C from fermenter_data table for the previous day, grouped by hour"
-        
-        Return ONLY the reformulated query, nothing else."""
+        system_message = """You are a query reformulation assistant. Your task is to take a user's potentially vague, incomplete, or poorly structured query and reformulate it into a clear, detailed natural language query that can be effectively converted to SQL by a downstream agent.
+                        Instructions:
+
+                        Analyze the user's intent: Understand what the user is trying to accomplish with their data query
+                        Identify missing details: Determine what information might be needed for a complete SQL query
+                        Make reasonable assumptions: Fill in likely details based on common database operations and business logic
+                        Structure the query clearly: Organize the reformulated query in a logical, SQL-friendly format
+
+                        Reformulation Guidelines:
+
+                        Be specific about data sources: If the user mentions "sales" or "customers", specify likely table names
+                        Clarify aggregations: If the user wants "totals" or "counts", specify what should be summed or counted
+                        Define time periods: If the user mentions "recent" or "last month", specify exact date ranges
+                        Specify sorting/ordering: Add reasonable default sorting if not specified
+                        Include filtering logic: Make explicit any implicit filters or conditions
+                        Clarify grouping: Specify what data should be grouped by if aggregations are involved."""
         
         response = client.chat.completions.create(
             model="gpt-4",
@@ -361,7 +363,7 @@ def main():
             if visualization_detector(query,results,client)['needs_visualization']:
                 print(visualization_detector(query,results,client))
  
-
+main()
 @app.post("/upload")
 def upload_csv(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
