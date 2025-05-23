@@ -133,11 +133,49 @@ def create_embeddings(db_params: dict, openai_api_key: str) -> Chroma:
         logger.error(f"Error creating embeddings: {str(e)}")
         raise
 
+def preprocess_query(query: str, client: OpenAI) -> str:
+    """Preprocess and regenerate the user query to make it more SQL-friendly."""
+    try:
+        system_message = """You are a SQL expert. Your task is to reformulate the user's question into a clear, SQL-friendly query.
+        Follow these steps:
+        1. Break down the question into specific data points needed
+        2. Identify the required tables and columns
+        3. Specify any needed aggregations (AVG, SUM, COUNT, etc.)
+        4. Identify any filters or conditions needed
+        5. Determine if any joins are required
+        6. Structure the query requirements in a clear, SQL-oriented format
+        
+        Example:
+        Original: "Show me the average temperature for fermenter 1 yesterday"
+        Reformulated: "Calculate the average value of FERM1_TEMP_C from fermenter_data table for the previous day, grouped by hour"
+        
+        Return ONLY the reformulated query, nothing else."""
+        
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": query}
+            ],
+            temperature=0
+        )
+        
+        reformulated_query = response.choices[0].message.content
+        logger.info(f"Original query: {query}")
+        logger.info(f"Reformulated query: {reformulated_query}")
+        return reformulated_query
+    except Exception as e:
+        logger.error(f"Error preprocessing query: {str(e)}")
+        return query
+
 def generate_sql(engine, vector_store: Chroma, query: str, client: OpenAI, max_attempts: int = 5) -> str:
     """Generate SQL from natural language query using RAG."""
     try:
+        # Preprocess the query first
+        reformulated_query = preprocess_query(query, client)
+        
         # Retrieve relevant metadata
-        relevant_docs = vector_store.similarity_search(query, k=1)
+        relevant_docs = vector_store.similarity_search(reformulated_query, k=1)
         context = "\n".join([doc.page_content for doc in relevant_docs])
         # Construct system message
         system_message = f"""You are a SQL expert specialized in MySQL. Based on the given database schema and user question, generate a valid, precise, and efficient MySQL query.
@@ -152,9 +190,9 @@ Instructions:
     3. Use backticks (`) to quote identifiers (table and column names) to preserve case sensitivity and avoid keyword conflicts.
     4. Before finalizing your response, verify that every table and column name in your query exactly matches those in the provided schema.
     5. When appropriate, use advanced MySQL features like:
-       - Common Table Expressions (WITH clauses) for complex queries
-       - Window functions (OVER, PARTITION BY) for analytical queries
-       - JSON functions when dealing with JSON data
+        - Common Table Expressions (WITH clauses) for complex queries
+        - Window functions (OVER, PARTITION BY) for analytical queries
+        - JSON functions when dealing with JSON data
     6. Cast values properly when needed (e.g., ::date, ::integer).
     7. Include appropriate JOIN conditions to prevent cartesian products.
     8. Consider performance implications - use efficient filtering early in the query.
@@ -162,14 +200,14 @@ Instructions:
     10. Output only the executable SQL query - no explanations, comments, or markdown.
 
 User Query:
-{query}"""
+{reformulated_query}"""
 
         # Generate SQL using OpenAI
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": query}
+                {"role": "user", "content": reformulated_query}
             ],
             temperature=0
         )
@@ -322,7 +360,7 @@ def main():
             print(answer)
             if visualization_detector(query,results,client)['needs_visualization']:
                 print(visualization_detector(query,results,client))
-        
+ 
 
 @app.post("/upload")
 def upload_csv(file: UploadFile = File(...)):
