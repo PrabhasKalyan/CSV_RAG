@@ -362,7 +362,12 @@ def main():
             print(answer)
             if visualization_detector(query,results,client)['needs_visualization']:
                 print(visualization_detector(query,results,client))
- 
+
+@app.post("/test")
+def test():
+    return "All good"
+
+
 @app.post("/upload")
 def upload_csv(file: UploadFile = File(...)):
     if not file.filename.endswith(".csv"):
