@@ -30,7 +30,7 @@ def init_db(db_name: str, user: str, password: str, host: str, port: str) -> tup
         'port': port
     }
     
-    # Create SQLAlchemy engine for PostgreSQL
+    # Create SQLAlchemy engine for MySQL
     engine = create_engine(
         f'mysql+mysqlconnector://{user}:{password}@{host}:{port}/{db_name}'
     )
@@ -39,8 +39,9 @@ def init_db(db_name: str, user: str, password: str, host: str, port: str) -> tup
     try:
         with mysql.connector.connect(**db_params) as conn:
             with conn.cursor() as cur:
+                cur.execute(f"USE `{db_name}`;")
                 cur.execute('''
-                    CREATE TABLE IF NOT EXISTS table_metadata (
+                    CREATE TABLE IF NOT EXISTS metadata_table (
                         table_name VARCHAR(255) PRIMARY KEY,
                         metadata JSON
                     )
@@ -65,15 +66,16 @@ def store_metadata(db_params: dict, table_name: str, df: pd.DataFrame) -> None:
     try:
         with mysql.connector.connect(**db_params) as conn:
             with conn.cursor() as cur:
-                cur.execute("USE `Analyze`;")
+                # Ensure we're using the correct database
+                cur.execute(f"USE `{db_params['database']}`;")
                 cur.execute(
-                    '''
-                    INSERT INTO metadata_table (table_name, metadata)
-                    VALUES (%s, %s)
-                    ON DUPLICATE KEY UPDATE metadata = VALUES(metadata);
-                    ''',
-                    (table_name, json.dumps(metadata))
-                )
+                '''
+                INSERT INTO metadata_table (table_name, metadata)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE metadata = %s;
+                ''',
+                (table_name, json.dumps(metadata), json.dumps(metadata))
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Error storing metadata: {str(e)}")
@@ -103,7 +105,9 @@ def create_embeddings(db_params: dict, openai_api_key: str) -> Chroma:
         # Fetch all metadata
         with mysql.connector.connect(**db_params) as conn:
             with conn.cursor() as cur:
-                cur.execute('SELECT table_name, metadata FROM table_metadata')
+                # Ensure we're using the correct database
+                cur.execute(f"USE `{db_params['database']}`;")
+                cur.execute('SELECT table_name, metadata FROM metadata_table')
                 metadata_records = cur.fetchall()
         # Prepare documents for embedding
         documents = []
