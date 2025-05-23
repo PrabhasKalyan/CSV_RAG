@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def init_db(db_name: str, user: str, password: str, host: str, port: str) -> tuple:
     """Initialize database connection and create metadata table."""
     db_params = {
-        'dbname': db_name,
+        'database': db_name,
         'user': user,
         'password': password,
         'host': host,
@@ -65,12 +65,12 @@ def store_metadata(db_params: dict, table_name: str, df: pd.DataFrame) -> None:
     try:
         with mysql.connector.connect(**db_params) as conn:
             with conn.cursor() as cur:
+                cur.execute("USE `Analyze`;")
                 cur.execute(
                     '''
-                    INSERT INTO table_metadata (table_name, metadata)
+                    INSERT INTO metadata_table (table_name, metadata)
                     VALUES (%s, %s)
-                    ON DUPLICATE KEY UPDATE (table_name) 
-                    DO UPDATE SET metadata = EXCLUDED.metadata
+                    ON DUPLICATE KEY UPDATE metadata = VALUES(metadata);
                     ''',
                     (table_name, json.dumps(metadata))
                 )
@@ -294,12 +294,12 @@ def main():
         db_name=os.environ.get("DB_NAME"),
         user=os.environ.get("DB_USER"),
         password=os.environ.get("DB_PASSWORD"),
-        host=os.environ.get("DB_HOST", "localhost"),  # default to localhost
-        port=os.environ.get("DB_PORT", "3306")        # default to 5432
+        host=os.environ.get("DB_HOST", "localhost"),  
+        port=os.environ.get("DB_PORT", "3306")        
     )
 
     # Convert CSV to SQL
-    csv_to_sql(engine, db_params, "/Users/prabhaskalyan/Downloads/aemtek_lims_data.csv", "rag_db")
+    csv_to_sql(engine, db_params, "/Users/prabhaskalyan/Downloads/aemtek_lims_data.csv", "ex_db")
     
     # # Create embeddings
     vector_store = create_embeddings(db_params, client.api_key)
@@ -319,7 +319,7 @@ def main():
             if visualization_detector(query,results,client)['needs_visualization']:
                 print(visualization_detector(query,results,client))
         
-
+main()
 
 @app.post("/upload")
 def upload_csv(file: UploadFile = File(...)):
