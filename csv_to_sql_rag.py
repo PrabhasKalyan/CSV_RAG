@@ -8,7 +8,7 @@ from openai import OpenAI
 import json
 from typing import List, Dict, Any
 import logging
-from fastapi import FastAPI,UploadFile,File
+from fastapi import FastAPI,UploadFile,File,Form
 import os,tempfile
 import mysql.connector
 
@@ -80,6 +80,32 @@ def store_metadata(db_params: dict, table_name: str, df: pd.DataFrame) -> None:
     except Exception as e:
         logger.error(f"Error storing metadata: {str(e)}")
         raise
+
+
+def retrieve_metadata(db_params: dict, table_name: str):
+    """Retrieve metadata for a given table name from the MySQL metadata_table."""
+    try:
+        with mysql.connector.connect(**db_params) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"USE `{db_params['database']}`;")
+                cur.execute(
+                    '''
+                    SELECT metadata FROM metadata_table
+                    WHERE table_name = %s;
+                    ''',
+                    (table_name,)
+                )
+                result = cur.fetchone()
+                if result:
+                    metadata_json = result[0]
+                    return json.loads(metadata_json)
+                else:
+                    logger.warning(f"No metadata found for table: {table_name}")
+                    return {}
+    except Exception as e:
+        logger.error(f"Error retrieving metadata: {str(e)}")
+        raise
+
 
 def csv_to_sql(engine, db_params: dict, csv_path: str, table_name: str) -> None:
     """Convert CSV to SQL table and store metadata."""
@@ -154,10 +180,10 @@ def preprocess_query(query: str, client: OpenAI) -> str:
                         Clarify grouping: Specify what data should be grouped by if aggregations are involved."""
         
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": query}
+                {"role": "user", "content": str(query)}
             ],
             temperature=0
         )
@@ -170,15 +196,14 @@ def preprocess_query(query: str, client: OpenAI) -> str:
         logger.error(f"Error preprocessing query: {str(e)}")
         return query
 
-def generate_sql(engine, vector_store: Chroma, query: str, client: OpenAI, max_attempts: int = 5) -> str:
+def generate_sql(engine, query: str, context,client: OpenAI, max_attempts: int = 5) -> str:
     """Generate SQL from natural language query using RAG."""
     try:
         # Preprocess the query first
-        reformulated_query = preprocess_query(query, client)
+        # reformulated_query = preprocess_query(query, client)
         
         # Retrieve relevant metadata
-        relevant_docs = vector_store.similarity_search(reformulated_query, k=1)
-        context = "\n".join([doc.page_content for doc in relevant_docs])
+        # relevant_docs = vector_store.similarity_search(reformulated_query, k=1)
         # Construct system message
         system_message = f"""You are a SQL expert specialized in MySQL. Based on the given database schema and user question, generate a valid, precise, and efficient MySQL query.
 
@@ -202,14 +227,14 @@ Instructions:
     10. Output only the executable SQL query - no explanations, comments, or markdown.
 
 User Query:
-{reformulated_query}"""
+{query}"""
 
         # Generate SQL using OpenAI
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_message},
-                {"role": "user", "content": reformulated_query}
+                {"role": "user", "content": str(query)}
             ],
             temperature=0
         )
@@ -228,9 +253,9 @@ User Query:
                 correction_response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": f"You are a SQL expert. The user will provide a faulty PostgreSQL query and an error message. "
+                        {"role": "system", "content": f"You are a SQL expert. The user will provide a faulty MySQL query and an error message. "
                 "Your task is to return ONLY the corrected SQL query. "
-                "Do NOT include any explanation or commentary. Just return the corrected query as plain SQL. PostgreSQL query that failed with this error: {str(e)}"},
+                "Do NOT include any explanation or commentary. Just return the corrected query as plain SQL. mySQL query that failed with this error: {str(e)}"},
                         {"role": "user", "content": f"Original query: {sql_query}"}
                     ],
                     temperature=0
@@ -302,6 +327,7 @@ def visualization_detector(query, results, client):
     - Tables are better for detailed data that needs precise values
     - Complex relationships between multiple variables may require scatter plots
     - Give json such that it should be directly given to frontend to render consider json would be dynamic use generic key value pairs
+    - There should be only two in formatted_data labels and values which shuld contain respective data ex: labels:A,B,C and values:1,3,5 make sure each label has a value
     """
     
     try:
@@ -343,30 +369,108 @@ def main():
     )
 
     # Convert CSV to SQL
-    csv_to_sql(engine, db_params, "/Users/prabhaskalyan/Downloads/aemtek_lims_data.csv", "ex_db")
+    csv_to_sql(engine, db_params, "/Users/prabhaskalyan/Downloads/aemtek_lims_data.csv", "my_rag_db")
     
     # # Create embeddings
     vector_store = create_embeddings(db_params, client.api_key)
     
     # # Generate and execute SQL from natural language
     questions = [
-    "Compare actuals to spec: Summarize yesterday’s fermenter KPIs: average FERM1_TEMP_C vs spec (31–33 °C), average FERM1_PH vs spec (4.2-4.8), and flag any 5-min intervals out of range.",
+    "Can we develop a predictive model for QC_Result using all datasets?"
 ]
+
     for query in questions:
         sql_query = generate_sql(engine, vector_store, query, client)
         if sql_query:
             print(sql_query)
             results = execute_query(engine, sql_query)
             answer = get_answer_from_sql_results(results,query,client)
-            print(query+"\n")
-            print(answer)
+            print(f"Query:{query}"+"\n")
+            print(f"Answer:{answer}")
             if visualization_detector(query,results,client)['needs_visualization']:
                 print(visualization_detector(query,results,client))
+
 
 @app.post("/test")
 def test():
     return "All good"
 
+
+@app.post("/query_csv")
+def query_csv(query:str=Form(),file: UploadFile = File(...)):
+    query = str(query)
+    if not file.filename.endswith(".csv"):
+        return {"error": "Please upload a CSV file"}
+    engine, db_params = init_db(
+        db_name=os.environ.get("DB_NAME"),
+        user=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD"),
+        host=os.environ.get("DB_HOST", "localhost"), 
+        port=os.environ.get("DB_PORT", "5432")        
+    )
+    try:
+        contents = file.file.read().decode("utf-8")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", encoding="utf-8") as tmp_file:
+            tmp_file.write(contents)
+            tmp_file_path = tmp_file.name
+        table_name = os.path.splitext(file.filename)[0]
+        csv_to_sql(engine, db_params, tmp_file_path, table_name)
+        os.remove(tmp_file_path)
+    except Exception as e:
+        return {"error": str(e)}
+    client = OpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY")
+    )
+    context = retrieve_metadata(db_params=db_params,table_name=table_name)
+    sql_query = generate_sql(engine,context, query, client)
+    if sql_query:
+        print(sql_query)
+        results = execute_query(engine, sql_query)
+        answer = get_answer_from_sql_results(results,query,client)
+        print(query+"\n")
+        print(answer)
+        
+        if visualization_detector(query,results,client)['needs_visualization']:
+            print(visualization_detector(query,results,client))
+            return {"answer":answer,"json":visualization_detector(query,results,client)}
+        else:
+            return {"answer":answer}
+    else:
+        return "Answer not found. Try again"
+
+
+@app.post("/query_")
+def query_csv(query:str=Form(),table_name:str=Form()):
+    query = str(query)
+    table_name = str(table_name)
+    
+    engine, db_params = init_db(
+        db_name=os.environ.get("DB_NAME"),
+        user=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD"),
+        host=os.environ.get("DB_HOST", "localhost"), 
+        port=os.environ.get("DB_PORT", "5432")        
+    )
+    client = OpenAI(
+    api_key=os.environ.get("OPENAI_API_KEY")
+    )
+    context = retrieve_metadata(db_params=db_params,table_name=table_name)
+    sql_query = generate_sql(engine,context, query, client)
+    if sql_query:
+        print(sql_query)
+        results = execute_query(engine, sql_query)
+        answer = get_answer_from_sql_results(results,query,client)
+        print(query+"\n")
+        print(answer)
+        
+        if visualization_detector(query,results,client)['needs_visualization']:
+            print(visualization_detector(query,results,client))
+            return {"answer":answer,"json":visualization_detector(query,results,client)}
+        else:
+            return {"answer":answer}
+    else:
+        return "Answer not found. Try again"
+    
 
 @app.post("/upload")
 def upload_csv(file: UploadFile = File(...)):
